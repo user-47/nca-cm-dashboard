@@ -1,0 +1,257 @@
+name: nca-creative-media
+
+# One stack: the app, its database, object storage, and the pipeline runner.
+#
+#   cp .env.example .env      then fill in the four secrets it asks for
+#   docker compose up -d
+#   docker compose run --rm seed
+#
+# Then open http://localhost:3000 and sign in.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nca}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-nca}
+    ports:
+      # Loopback only. This is here so `npm run dev` on the host can reach the
+      # database; nothing outside this machine needs it.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nca} -d ${POSTGRES_DB:-nca}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+    ports:
+      # The browser uploads straight here on a presigned URL, so this port has
+      # to be reachable from wherever people use the app.
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: [ "CMD", "mc", "ready", "local" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Creates the bucket on first boot, then exits.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c " mc alias set nca http://minio:9000 ${S3_ACCESS_KEY} ${S3_SECRET_KEY} && mc mb --ignore-existing nca/${S3_BUCKET:-nca-media} && echo 'Bucket ${S3_BUCKET:-nca-media} is ready.' "
+
+  migrate:
+    build:
+      context: .
+      target: migrator
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nca}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nca}
+    restart: "no"
+
+  # Run by hand, once, to create the first church and admin:
+  #   docker compose run --rm seed
+  seed:
+    build:
+      context: .
+      target: migrator
+    profiles: [ "manual" ]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nca}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nca}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.church}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      ADMIN_NAME: ${ADMIN_NAME:-Media lead}
+      ORG_NAME: ${ORG_NAME:-New Covenant Assembly}
+      ORG_SLUG: ${ORG_SLUG:-new-covenant}
+    command: [ "npm", "run", "db:seed" ]
+
+  app:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    volumes:
+      - media:/media
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nca}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nca}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      PIPELINE_SECRET: ${PIPELINE_SECRET:?set PIPELINE_SECRET in .env}
+      # Where n8n reaches the app to post callbacks: a compose hostname, not
+      # localhost, because localhost inside the n8n container is n8n itself.
+      APP_URL: http://app:3000
+      # The address people type. Decides whether the session cookie is marked
+      # Secure, so set it to your https:// address once TLS is in front.
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+      N8N_BASE_URL: http://n8n:5678
+      S3_ENDPOINT: http://minio:9000
+      # Where a browser reaches MinIO. Change the host when this is not local.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      S3_BUCKET: ${S3_BUCKET:-nca-media}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_FORCE_PATH_STYLE: "true"
+      # Poster creator. The dashboard calls render-api server-side only, so
+      # render-api never needs to be reachable from a browser.
+      RENDER_API_URL: http://render-api:3000
+      # The iframe preview is loaded by the browser, so this one is a host
+      # address rather than a compose hostname.
+      NEXT_PUBLIC_TEMPLATES_URL: ${NEXT_PUBLIC_TEMPLATES_URL:-http://localhost:3100}
+
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile.n8n
+    image: nca-creative-media-n8n
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "5678:5678"
+    environment:
+      # n8n 2.x ships with the Execute Command node excluded by default. The
+      # assembly pipeline shells out to FFmpeg, so it has to be re-enabled.
+      # Overriding NODES_EXCLUDE replaces the default list wholesale, so
+      # localFileTrigger is restated here to keep it excluded.
+      # Single-quoted so the JSON array survives YAML parsing.
+      NODES_EXCLUDE: '["n8n-nodes-base.localFileTrigger"]'
+      # $env in Code nodes is blocked unless this is the exact string "false".
+      # Both pipelines read $env.PIPELINE_SECRET to sign and verify callbacks,
+      # so without this every execution fails on the signature step.
+      # Quoted because YAML would otherwise make it a boolean and compose
+      # rejects non-string environment values.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # The Code nodes verify signatures and write the render plan, so they
+      # need these two builtins. Nothing else is allowed through.
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto,fs
+      PIPELINE_SECRET: ${PIPELINE_SECRET}
+      S3_BUCKET: ${S3_BUCKET:-nca-media}
+      KOKORO_URL: ${KOKORO_URL:-http://kokoro:8880}
+      FISH_API_KEY: ${FISH_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      GENERIC_TIMEZONE: ${TIMEZONE:-America/Edmonton}
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - pipeline-work:/data
+      # The FFmpeg script is mounted rather than baked in, so editing it does
+      # not mean rebuilding the image.
+      - ./n8n/scripts:/scripts:ro
+      - media:/media
+
+  # The visual layer. Renders a poster at /render/[brandId]/[template] with no
+  # auth, so Playwright can screenshot it. Published on the host mainly so the
+  # dashboard's preview iframe and a designer's browser can reach it.
+  templates:
+    build:
+      context: .
+      dockerfile: services/templates/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3100:3000"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nca}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nca}
+      # Templates resolve image object keys themselves, over the compose
+      # network. A presigned URL cannot be used here: it is signed for the
+      # address a browser uses, and inside this container that address is this
+      # container.
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET:-nca-media}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_REGION: us-east-1
+      NODE_ENV: production
+
+  # Owns Playwright. Screenshots a templates URL and writes the PNG to MinIO.
+  render-api:
+    build:
+      context: .
+      dockerfile: services/render-api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      templates:
+        condition: service_healthy
+    ports:
+      # Published so the contract can be exercised with curl from the host.
+      # Nothing in the product calls it from a browser.
+      - "3200:3000"
+    # Chromium uses /dev/shm for its renderer processes and Docker caps it at
+    # 64MB by default. Past that a complex page crashes the tab with no useful
+    # error, which looks like a mysteriously blank poster.
+    shm_size: 1gb
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-nca}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-nca}
+      TEMPLATES_URL: http://templates:3000
+      S3_ENDPOINT: http://minio:9000
+      # URLs are handed back to a browser, so they must be signed for the host
+      # a browser can reach, not for the compose hostname.
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      S3_BUCKET: ${S3_BUCKET:-nca-media}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_FORCE_PATH_STYLE: "true"
+      RENDER_MINIO_PREFIX: ${RENDER_MINIO_PREFIX:-posters/}
+      REFERENCE_MINIO_PREFIX: ${REFERENCE_MINIO_PREFIX:-refs/}
+      PLAYWRIGHT_POOL_SIZE: ${PLAYWRIGHT_POOL_SIZE:-3}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-4-7}
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+  # Kokoro is optional. Start it with:  docker compose --profile voice up -d
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    profiles: [ "voice" ]
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+
+volumes:
+  db-data:
+  minio-data:
+  n8n-data:
+  pipeline-work:
+  media:

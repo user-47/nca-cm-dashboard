@@ -1,0 +1,366 @@
+{
+  "name": "NCA - Assemble announcement video",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "nca/announcement-assembly",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000001",
+      "name": "Assembly requested",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -780,
+        300
+      ],
+      "webhookId": "b2000000-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify the shared secret first. Knowing this URL must not be enough to\n// make the church's server render video.\nconst crypto = require('crypto');\n\nconst secret = $env.PIPELINE_SECRET;\nif (!secret) throw new Error('PIPELINE_SECRET is not set on this n8n instance.');\n\nconst item = $input.first();\nconst b64 = item.binary?.data?.data;\nif (!b64) throw new Error('The webhook is not configured to pass the raw body.');\n\nconst raw = Buffer.from(b64, 'base64').toString('utf8');\nconst expected = 'sha256=' + crypto.createHmac('sha256', secret).update(raw, 'utf8').digest('hex');\nconst got = item.json.headers['x-signature'] || '';\n\nconst a = Buffer.from(expected);\nconst b = Buffer.from(got);\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {\n  throw new Error('Signature mismatch. Check that the app and n8n share the same PIPELINE_SECRET.');\n}\n\nconst body = JSON.parse(raw);\nconst p = body.payload || {};\n\nreturn [{\n  json: {\n    jobId: body.jobId,\n    callbackUrl: body.callbackUrl,\n    announcementId: p.announcementId,\n    title: p.title,\n    sectionCount: (p.sections || []).length,\n    outputKey: p.output?.key,\n    putUrl: p.output?.putUrl,\n    outPath: `/data/out/${body.jobId}.mp4`,\n    // plan carries intro, outro and sections through to the render step.\n    // Dropping any of them here is how bookends go missing from the output.\n    plan: p\n  }\n}];"
+      },
+      "id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Check signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, jobId: $json.jobId }) }}",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000003",
+      "name": "Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Write the render plan to disk, and sign a \"working on it\" callback. The\n// plan goes to a file rather than the command line so a poster filename with\n// a quote in it cannot break the shell.\nconst crypto = require('crypto');\nconst fs = require('fs');\n\nconst ctx = $('Check signature').first().json;\n\nfs.mkdirSync('/data/jobs', { recursive: true });\nconst planPath = `/data/jobs/${ctx.jobId}.json`;\nfs.writeFileSync(planPath, JSON.stringify({\n  jobId: ctx.jobId,\n  outPath: ctx.outPath,\n  intro: ctx.plan.intro,\n  outro: ctx.plan.outro,\n  // One recording covering every section, when the person uploaded one.\n  // The assembler switches on its presence, so dropping it here would\n  // silently fall back to per-section audio that is not there.\n  narration: ctx.plan.narration,\n  sections: ctx.plan.sections\n}));\n\nconst body = JSON.stringify({\n  status: 'rendering',\n  progress: 10,\n  stepLabel: `Rendering ${ctx.sectionCount} ${ctx.sectionCount === 1 ? 'section' : 'sections'}`\n});\n\nconst signature = 'sha256=' + crypto\n  .createHmac('sha256', $env.PIPELINE_SECRET)\n  .update(body, 'utf8')\n  .digest('hex');\n\nreturn [{ json: { planPath, callbackUrl: ctx.callbackUrl, body, signature } }];"
+      },
+      "id": "b2000000-0000-4000-8000-000000000004",
+      "name": "Write plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-000000000005",
+      "name": "Report rendering",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=node /scripts/assemble-announcement.mjs {{ $('Write plan').first().json.planPath }}"
+      },
+      "id": "b2000000-0000-4000-8000-000000000006",
+      "name": "Run FFmpeg",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        320,
+        300
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "fileSelector": "={{ $('Check signature').first().json.outPath }}",
+        "options": {
+          "dataPropertyName": "video"
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000007",
+      "name": "Read finished video",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        560,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $('Check signature').first().json.putUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "video/mp4"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "video",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "b2000000-0000-4000-8000-000000000008",
+      "name": "Store in MinIO",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\nconst ctx = $('Check signature').first().json;\n\n// The script prints only its result JSON on stdout; FFmpeg chatter went to a\n// log file, so this parse is safe.\nlet durationMs = 0;\ntry {\n  durationMs = JSON.parse($('Run FFmpeg').first().json.stdout).durationMs || 0;\n} catch (cause) {\n  durationMs = 0;\n}\n\nconst body = JSON.stringify({\n  status: 'complete',\n  progress: 100,\n  stepLabel: 'Video ready',\n  artifact: {\n    key: ctx.outputKey,\n    filename: `${(ctx.title || 'announcement').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.mp4`,\n    contentType: 'video/mp4',\n    durationMs\n  }\n});\n\nconst signature = 'sha256=' + crypto\n  .createHmac('sha256', $env.PIPELINE_SECRET)\n  .update(body, 'utf8')\n  .digest('hex');\n\nreturn [{ json: { callbackUrl: ctx.callbackUrl, body, signature } }];"
+      },
+      "id": "b2000000-0000-4000-8000-000000000009",
+      "name": "Sign result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-00000000000a",
+      "name": "Report complete",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1220,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// The render stopped. Send back something the person can act on rather than\n// a stack trace: the last few lines of FFmpeg's own log.\nconst crypto = require('crypto');\nconst fs = require('fs');\n\nconst ctx = $('Check signature').first().json;\nconst failure = $input.first().json;\n\nlet tail = '';\ntry {\n  const log = fs.readFileSync(`/data/work/${ctx.jobId}/ffmpeg.log`, 'utf8');\n  tail = log.trim().split('\\n').slice(-4).join(' ');\n} catch (cause) {\n  tail = '';\n}\n\nconst reason = tail || failure.stderr || failure.error?.message || 'no detail was reported';\n\nconst body = JSON.stringify({\n  status: 'failed',\n  stepLabel: 'Render stopped',\n  error: `The render stopped. ${reason}`.slice(0, 1900)\n});\n\nconst signature = 'sha256=' + crypto\n  .createHmac('sha256', $env.PIPELINE_SECRET)\n  .update(body, 'utf8')\n  .digest('hex');\n\nreturn [{ json: { callbackUrl: ctx.callbackUrl, body, signature } }];"
+      },
+      "id": "b2000000-0000-4000-8000-00000000000b",
+      "name": "Sign failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "content-type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {}
+      },
+      "id": "b2000000-0000-4000-8000-00000000000c",
+      "name": "Report failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Assembly requested": {
+      "main": [
+        [
+          {
+            "node": "Check signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check signature": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Acknowledge": {
+      "main": [
+        [
+          {
+            "node": "Write plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write plan": {
+      "main": [
+        [
+          {
+            "node": "Report rendering",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Report rendering": {
+      "main": [
+        [
+          {
+            "node": "Run FFmpeg",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run FFmpeg": {
+      "main": [
+        [
+          {
+            "node": "Read finished video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sign failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read finished video": {
+      "main": [
+        [
+          {
+            "node": "Store in MinIO",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in MinIO": {
+      "main": [
+        [
+          {
+            "node": "Sign result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign result": {
+      "main": [
+        [
+          {
+            "node": "Report complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign failure": {
+      "main": [
+        [
+          {
+            "node": "Report failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

@@ -1,0 +1,256 @@
+{
+  "name": "NCA - Generate voiceover",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "nca/voiceover",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Voiceover requested",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-660, 300],
+      "webhookId": "a1000000-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify the shared-secret signature before doing anything else. An\n// unsigned request must not be able to make this instance render or speak.\nconst crypto = require('crypto');\n\nconst secret = $env.PIPELINE_SECRET;\nif (!secret) throw new Error('PIPELINE_SECRET is not set on this n8n instance.');\n\nconst item = $input.first();\nconst b64 = item.binary?.data?.data;\nif (!b64) throw new Error('The webhook is not configured to pass the raw body.');\n\nconst raw = Buffer.from(b64, 'base64').toString('utf8');\nconst expected = 'sha256=' + crypto.createHmac('sha256', secret).update(raw, 'utf8').digest('hex');\nconst got = item.json.headers['x-signature'] || '';\n\nconst a = Buffer.from(expected);\nconst b = Buffer.from(got);\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {\n  throw new Error('Signature mismatch. Check that the app and n8n share the same PIPELINE_SECRET.');\n}\n\nconst body = JSON.parse(raw);\nconst p = body.payload || {};\n\nreturn [{\n  json: {\n    jobId: body.jobId,\n    callbackUrl: body.callbackUrl,\n    text: p.text,\n    sectionId: p.sectionId || null,\n    voiceId: p.voiceId || null,\n    provider: p.voice?.provider,\n    providerVoiceId: p.voice?.voiceId,\n    language: p.voice?.language || 'en',\n    settings: p.voice?.settings || {},\n    outKey: `${(p.sectionId || p.voiceId || body.jobId)}.mp3`\n  }\n}];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Check signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-440, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, jobId: $json.jobId }) }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-220, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "version": 2 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "kokoro",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "kokoro"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "version": 2 },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.provider }}",
+                    "rightValue": "fish",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "fish"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "Which provider",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.KOKORO_URL }}/v1/audio/speech",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'kokoro', input: $json.text, voice: $json.providerVoiceId, response_format: 'mp3', speed: $json.settings.speed || 1 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "audio"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Speak with Kokoro",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 180]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.fish.audio/v1/tts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.FISH_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text, reference_id: $json.providerVoiceId, format: 'mp3', latency: 'normal' }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "audio"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "Speak with Fish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 420]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/data/work/{{ $('Check signature').first().json.jobId }}.mp3",
+        "dataPropertyName": "audio",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Write audio to disk",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "command": "=ffprobe -v error -show_entries format=duration -of csv=p=0 /data/work/{{ $('Check signature').first().json.jobId }}.mp3"
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Measure duration",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "={{ $env.S3_BUCKET }}",
+        "fileName": "=voiceover/{{ $('Check signature').first().json.outKey }}",
+        "binaryData": true,
+        "binaryPropertyName": "audio",
+        "additionalFields": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Store in MinIO",
+      "type": "n8n-nodes-base.s3",
+      "typeVersion": 1,
+      "position": [920, 300],
+      "credentials": {
+        "s3": {
+          "id": "nca-minio",
+          "name": "NCA MinIO"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build and sign the completion callback. The app trusts this only because\n// of the signature, so it is computed over the exact bytes that get sent.\nconst crypto = require('crypto');\n\nconst ctx = $('Check signature').first().json;\n// ffprobe reports seconds as a decimal. The app stores milliseconds, because\n// that is what the Section Strip measures a card's width in.\nconst durationMs = Math.round((parseFloat($('Measure duration').first().json.stdout) || 0) * 1000);\n\nconst body = JSON.stringify({\n  status: 'complete',\n  progress: 100,\n  stepLabel: 'Voiceover ready',\n  sectionId: ctx.sectionId,\n  voiceId: ctx.voiceId,\n  artifact: {\n    key: `voiceover/${ctx.outKey}`,\n    filename: ctx.outKey,\n    contentType: 'audio/mpeg',\n    durationMs\n  }\n});\n\nconst signature = 'sha256=' + crypto\n  .createHmac('sha256', $env.PIPELINE_SECRET)\n  .update(body, 'utf8')\n  .digest('hex');\n\nreturn [{ json: { callbackUrl: ctx.callbackUrl, body, signature } }];"
+      },
+      "id": "a1000000-0000-4000-8000-00000000000a",
+      "name": "Sign result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "content-type", "value": "application/json" },
+            { "name": "x-signature", "value": "={{ $json.signature }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-00000000000b",
+      "name": "Report complete",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 300]
+    }
+  ],
+  "connections": {
+    "Voiceover requested": {
+      "main": [[{ "node": "Check signature", "type": "main", "index": 0 }]]
+    },
+    "Check signature": {
+      "main": [[{ "node": "Acknowledge", "type": "main", "index": 0 }]]
+    },
+    "Acknowledge": {
+      "main": [[{ "node": "Which provider", "type": "main", "index": 0 }]]
+    },
+    "Which provider": {
+      "main": [
+        [{ "node": "Speak with Kokoro", "type": "main", "index": 0 }],
+        [{ "node": "Speak with Fish", "type": "main", "index": 0 }]
+      ]
+    },
+    "Speak with Kokoro": {
+      "main": [[{ "node": "Write audio to disk", "type": "main", "index": 0 }]]
+    },
+    "Speak with Fish": {
+      "main": [[{ "node": "Write audio to disk", "type": "main", "index": 0 }]]
+    },
+    "Write audio to disk": {
+      "main": [[{ "node": "Measure duration", "type": "main", "index": 0 }]]
+    },
+    "Measure duration": {
+      "main": [[{ "node": "Store in MinIO", "type": "main", "index": 0 }]]
+    },
+    "Store in MinIO": {
+      "main": [[{ "node": "Sign result", "type": "main", "index": 0 }]]
+    },
+    "Sign result": {
+      "main": [[{ "node": "Report complete", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": ""
+  },
+  "pinData": {}
+}

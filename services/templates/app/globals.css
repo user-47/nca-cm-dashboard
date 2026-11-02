@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+/**
+ * Brand tokens reach Tailwind through this @theme block.
+ *
+ * Every value points at a --brand-* custom property, which the render page
+ * injects per request from the brand row. That indirection is the whole reason
+ * a template can be written once and drawn in any church's colours: a template
+ * says bg-surface, never a hex code.
+ */
+@theme {
+  --color-primary: var(--brand-primary);
+  --color-on-primary: var(--brand-on-primary);
+  --color-accent: var(--brand-accent);
+  --color-surface: var(--brand-surface);
+  --color-surface-alt: var(--brand-surface-alt);
+  --color-ink: var(--brand-ink);
+  --color-ink-muted: var(--brand-ink-muted);
+
+  --font-display: var(--brand-font-display);
+  --font-body: var(--brand-font-body);
+  --font-mono: var(--brand-font-mono);
+
+  --radius-card: var(--brand-radius-card);
+  --radius-pill: var(--brand-radius-pill);
+}
+
+/**
+ * A poster is a fixed-size canvas, not a document. No scrolling, no margins,
+ * no user-agent surprises: the viewport Playwright sets is exactly the frame.
+ */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--brand-surface, #ffffff);
+  color: var(--brand-ink, #000000);
+  font-family: var(--brand-font-body);
+  /* Screenshots are deterministic only if text rendering is. */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+/* Nothing on a poster is interactive, and a stray focus ring would render. */
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/**
+ * Motion has no meaning in a still image, and an animation mid-flight is a
+ * source of two renders differing. Everything is frozen at its end state.
+ */
+*,
+*::before,
+*::after {
+  animation: none !important;
+  transition: none !important;
+}

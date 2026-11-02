@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 64" role="img" aria-label="New Covenant Assembly">
+  <!-- Placeholder mark. Swap for the church's real logo when it is supplied;
+       nothing in the templates depends on these shapes, only on the file. -->
+  <g fill="none" stroke="#2E4A3C" stroke-width="4" stroke-linecap="round">
+    <path d="M16 46V18l22 28V18" />
+  </g>
+  <rect x="46" y="16" width="3" height="32" rx="1.5" fill="#B08532" />
+  <text x="60" y="30" font-family="Spectral, Georgia, serif" font-size="17" font-weight="600" fill="#1B2430">
+    New Covenant
+  </text>
+  <text x="60" y="48" font-family="Spectral, Georgia, serif" font-size="17" font-weight="500" fill="#5A6472">
+    Assembly
+  </text>
+</svg>

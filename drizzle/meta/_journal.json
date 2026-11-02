@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1786406298246,
+      "tag": "0000_gray_pet_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786940115842,
+      "tag": "0001_add_poster_creator_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786940128775,
+      "tag": "0002_drop_poster_tmpls",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788400966481,
+      "tag": "0003_square_talos",
+      "breakpoints": true
+    }
+  ]
+}

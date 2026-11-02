@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------- tokens */
+/* The default New Covenant theme. An org overrides any of these through
+   orgs.theme_json, which ThemeProvider writes onto :root as inline style. */
+
+:root {
+  --ink: #1b2430;
+  --ink-muted: #5a6472;
+  --paper: #eceee9;
+  --surface: #fafbf8;
+  --brass: #b08532;
+  --brass-hi: #c39a45;
+  --forest: #2e4a3c;
+
+  --success: #3e7150;
+  --warning: #c9772e;
+  --error: #9e3b2e;
+
+  /* Derived, not part of the six. Hairline borders at 12% ink. */
+  --line: rgba(27, 36, 48, 0.12);
+  --line-strong: rgba(27, 36, 48, 0.22);
+
+  --font-display: var(--font-spectral), Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "Cascadia Mono", monospace;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+  }
+
+  /* Brass marks the single primary action, the active nav item, and focus.
+     Nothing else. */
+  :focus-visible {
+    outline: 2px solid var(--brass);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  /* Tabular figures everywhere data is shown, so timestamps and durations
+     do not jitter as they tick. */
+  .font-mono,
+  time,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--brass) 28%, transparent);
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-md border bg-surface shadow-card;
+    border-color: var(--line);
+  }
+
+  .label {
+    @apply text-xs font-medium uppercase tracking-[0.07em] text-ink-muted;
+  }
+
+  .input {
+    @apply w-full rounded border bg-surface px-3 py-2 text-base text-ink
+           placeholder:text-ink-muted/60 transition-colors;
+    border-color: var(--line-strong);
+  }
+  .input:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--ink) 35%, transparent);
+  }
+  .input:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+}
+
+/* -------------------------------------------------------------- motion */
+/* Restrained by design: a pulse on a rendering job, the Section Strip width
+   animation, and hover states. When reduced motion is asked for, all of it
+   collapses to nothing rather than merely slowing down. */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Thin, quiet scrollbars for the Section Strip and long lists. */
+.scroll-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+.scroll-quiet::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.scroll-quiet::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
+}
+.scroll-quiet::-webkit-scrollbar-track {
+  background: transparent;
+}
